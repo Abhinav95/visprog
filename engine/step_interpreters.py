@@ -6,6 +6,7 @@ import functools
 import numpy as np
 import face_detection
 import io, tokenize
+import json
 from augly.utils.base_paths import EMOJI_DIR
 import augly.image as imaugs
 from PIL import Image,ImageDraw,ImageFont,ImageFilter
@@ -14,6 +15,59 @@ from transformers import (ViltProcessor, ViltForQuestionAnswering,
     MaskFormerFeatureExtractor, MaskFormerForInstanceSegmentation,
     CLIPProcessor, CLIPModel, AutoProcessor, BlipForQuestionAnswering)
 from diffusers import StableDiffusionInpaintPipeline
+
+if os.path.isdir('../siq2'):
+
+    data_dir = "../siq2"
+    # Import Video LLaMA
+    print("Trying to import Video_LLAMA")
+
+    # print("Trying to import pyannote")
+    # from pyannote.audio import Pipeline as DiarizationPipeline
+
+    import wget
+    print("Trying to import NeMo")
+    from omegaconf import OmegaConf
+    MODEL_CONFIG = os.path.join(data_dir,'diar_infer_telephonic.yaml')
+    if not os.path.exists(MODEL_CONFIG):
+        config_url = "https://raw.githubusercontent.com/NVIDIA/NeMo/main/examples/speaker_tasks/diarization/conf/inference/diar_infer_telephonic.yaml"
+        MODEL_CONFIG = wget.download(config_url,data_dir)
+
+    config = OmegaConf.load(MODEL_CONFIG)
+    output_dir = 'temp'
+    # print(OmegaConf.to_yaml(config))
+    import logging
+    logging.disable(logging.CRITICAL)
+    from nemo.collections.asr.models.msdd_models import NeuralDiarizer
+    config.diarizer.manifest_filepath = 'temp/input_manifest.json'
+    config.diarizer.out_dir = output_dir # Directory to store intermediate files and prediction outputs
+    pretrained_speaker_model = 'titanet_large'
+    config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
+    config.diarizer.speaker_embeddings.parameters.window_length_in_sec = [1.5,1.25,1.0,0.75,0.5] 
+    config.diarizer.speaker_embeddings.parameters.shift_length_in_sec = [0.75,0.625,0.5,0.375,0.1] 
+    config.diarizer.speaker_embeddings.parameters.multiscale_weights= [1,1,1,1,1] 
+    config.diarizer.oracle_vad = True # ----> ORACLE VAD 
+    config.diarizer.clustering.parameters.oracle_num_speakers = False
+    config.diarizer.msdd_model.model_path = 'diar_msdd_telephonic' # Telephonic speaker diarization model 
+    config.diarizer.msdd_model.parameters.sigmoid_threshold = [0.7, 1.0] # Evaluate with T=0.7 and T=1.0
+    config.num_workers = 1 # Workaround for multiprocessing hanging with ipython issue 
+    config.diarizer.manifest_filepath = 'temp/input_manifest.json'
+    config.diarizer.out_dir = output_dir #Directory to store intermediate files and prediction outputs
+    config.diarizer.speaker_embeddings.model_path = pretrained_speaker_model
+    config.diarizer.oracle_vad = False # compute VAD provided with model_path to vad config
+    config.diarizer.clustering.parameters.oracle_num_speakers=False
+
+    pretrained_vad = 'vad_multilingual_marblenet'
+
+    # Here, we use our in-house pretrained NeMo VAD model
+    config.diarizer.vad.model_path = pretrained_vad
+    config.diarizer.vad.parameters.onset = 0.8
+    config.diarizer.vad.parameters.offset = 0.6
+    config.diarizer.vad.parameters.pad_offset = -0.05
+
+    config.diarizer.msdd_model.model_path = 'diar_msdd_telephonic' # Telephonic speaker diarization model 
+    config.diarizer.msdd_model.parameters.sigmoid_threshold = [0.7, 1.0] # Evaluate with T=0.7 and T=1.0      
+
 
 from .nms import nms
 from vis_utils import html_embed_image, html_colored_span, vis_masks
@@ -1332,6 +1386,203 @@ class ReplaceInterpreter():
             return new_img, html_str
         return new_img
 
+class SubtitleInterpreter():
+
+    step_name = "GetSubtitles"
+
+    def __init__(self):
+        print(f'Registering {self.step_name} step')
+        # self.diarization_pipeline = DiarizationPipeline.from_pretrained(
+        #     "pyannote/speaker-diarization",
+        #     use_auth_token=os.getenv("HF_KEY")
+        # )
+        # self.diarization_pipeline.to(torch.device("cuda:0"))
+        
+
+    def parse(self,prog_step):
+        parse_result = parse_step(prog_step.prog_str)
+        step_name = parse_result['step_name']
+        video_id = parse_result['args']['video']
+        output_var = parse_result['output_var']
+        assert(step_name==self.step_name)
+        return video_id, output_var
+
+    def html(self):
+        raise NotImplementedError
+
+    def execute(self,prog_step,inspect=False):
+        video_id_var, output_var = self.parse(prog_step)
+        video_id = prog_step.state[video_id_var]
+        transcript_dir = prog_step.state['DATASET_INFO']['transcripts_path']
+        
+        transcript_text = ""
+        with open(os.path.join(transcript_dir, video_id+'.vtt'), 'r') as f:
+            for line in f:
+                transcript_text += line
+
+        audio_dir = prog_step.state['DATASET_INFO']['audios_path']
+        audio_filename = os.path.join(audio_dir, video_id+'.wav')
+        # diarization_output = self.diarization_pipeline({'audio': audio_filename})
+
+        # for turn, _, speaker in diarization_output.itertracks(yield_label=True):
+        #     transcript_text += (f"start={turn.start:.1f}s stop={turn.end:.1f}s speaker_{speaker}")
+        # 
+
+        diarization_output = ""
+        if prog_step.state['METHOD']['use_diarization'] == True:
+            meta = {
+                'audio_filepath': audio_filename, 
+                'offset': 0, 
+                'duration':None, 
+                'label': 'infer', 
+                'text': '-', 
+                'num_speakers': None,
+                'rttm_filepath': None, 
+                # 'uem_filepath' : None
+            }
+            os.makedirs('temp', exist_ok=True)
+            with open('temp/input_manifest.json','w') as fp:
+                json.dump(meta,fp)
+                fp.write('\n')
+
+            system_vad_msdd_model = NeuralDiarizer(cfg=config)        
+            system_vad_msdd_model.diarize()
+
+            diarization_output += "\nSpeaker Diarization Output:\n"
+
+            with open(os.path.join('temp/pred_rttms/', video_id+'.rttm')) as f:
+                for line in f:
+                    fields = line.split()
+                    diarization_output += '00:00:'+f"%06.3f"%float(fields[3]) + " --> " + '00:00:'+f"%06.3f" % (float(fields[4])+float(fields[3])) + "\n" + fields[7] + '\n\n'
+         
+        transcript_text += diarization_output
+        prog_step.state[output_var] = transcript_text
+        return transcript_text
+
+class CreateTextInterpreter():
+
+    step_name="CreateText"
+    def __init__(self):
+        print(f'Registering {self.step_name} step')
+
+    def parse(self,prog_step):
+        parse_result = parse_step(prog_step.prog_str)
+        step_name = parse_result['step_name']
+        question_var = parse_result['args']['question']
+        subtitles_var = parse_result['args']['subtitles']
+        video_description_var = parse_result['args']['video_description']
+        timestamp_var = parse_result['args']['timestamp']
+        output_var = parse_result['output_var']
+        assert(step_name==self.step_name)
+        return question_var, subtitles_var, video_description_var, timestamp_var, output_var
+
+    def html(self):
+        raise NotImplementedError
+
+    def execute(self,prog_step,inspect=False):
+        
+        question_var, subtitles_var, video_description_var, timestamp_var, output_var = self.parse(prog_step)
+
+        final_text = ""
+
+        question = prog_step.state[question_var]
+        subtitles = prog_step.state[subtitles_var]
+        video_description = prog_step.state[video_description_var]
+        timestamp = prog_step.state[timestamp_var]
+
+        # TODO: Some fancy prompt engineering here
+        final_text += question
+        final_text += "\nSubtitles:\n"
+        final_text += subtitles
+        final_text += "\nVisual description of the video:\n"
+        final_text += video_description
+
+        if timestamp != None:
+            final_text += timestamp
+        
+        print(final_text)
+
+        prog_step.state[output_var] = final_text        
+        return final_text
+
+class EvaluateTextInterpreter():
+
+    step_name = "EvaluateText"    
+    def __init__(self):
+        print(f'Registering {self.step_name} step')
+        self.model="gpt-3.5-turbo"
+        self.temperature = 0.7
+        self.top_p = 0.5
+
+    def parse(self,prog_step):
+        parse_result = parse_step(prog_step.prog_str)
+        step_name = parse_result['step_name']
+        text_var = parse_result['args']['text']
+        query_text = parse_result['args']['query']
+        output_var = parse_result['output_var']
+        assert(step_name==self.step_name)
+        return text_var, query_text, output_var
+
+    def html(self):
+        raise NotImplementedError
+
+    def execute(self,prog_step,inspect=False):
+        
+        text_var, query_text, output_var = self.parse(prog_step)
+
+        final_text = ""
+        final_text += prog_step.state[text_var]
+        final_text += query_text
+        
+        response=openai.ChatCompletion.create(
+            model=self.model,
+            messages=[{"role":"user", "content":final_text}],
+            temperature=self.temperature,
+            max_tokens=512,
+            top_p=self.top_p,
+            frequency_penalty=0,
+            presence_penalty=0,
+            n=1,
+        ) #TODO: Play around with the parameters
+        
+        answer = response.choices[0].message.content.lstrip('\n').rstrip('\n')
+        prog_step.state[output_var] = answer
+        return answer
+
+    
+class VideoDescriptionInterpreter():
+
+    step_name = "DescribeVideo"    
+    def __init__(self):
+        #TODO Import Video LLAMA here
+        print(f'Registering {self.step_name} step')
+        self.model = None
+
+    def parse(self,prog_step):
+        parse_result = parse_step(prog_step.prog_str)
+        step_name = parse_result['step_name']
+        video_id_var = parse_result['args']['video']
+        timestamp_var = parse_result['args']['timestamp']
+        query_text = parse_result['args']['query']
+        output_var = parse_result['output_var']
+        assert(step_name==self.step_name)
+        return video_id_var, timestamp_var, query_text, output_var
+
+    def html(self):
+        raise NotImplementedError
+
+    def execute(self,prog_step,inspect=False):
+        video_id_var, timestamp_var, query_text, output_var = self.parse(prog_step)
+        video_id = prog_step.state[video_id_var]   
+        video_dir = prog_step.state['DATASET_INFO']['videos_path']
+        
+        video_description_text = "\nThis is a placeholder text for the video description generated by the VQA model\n"
+        # Process the video and optionally the audio here
+                
+        prog_step.state[output_var] = video_description_text
+        return video_description_text
+
+
 
 def register_step_interpreters(dataset='nlvr'):
     if dataset=='nlvr':
@@ -1377,4 +1628,11 @@ def register_step_interpreters(dataset='nlvr'):
             RESULT=ResultInterpreter(),
             TAG=TagInterpreter(),
             LOC=Loc2Interpreter(thresh=0.05,nms_thresh=0.3)
+        )
+    elif dataset=='siq2':
+        return dict(
+            GetSubtitles=SubtitleInterpreter(),
+            CreateText=CreateTextInterpreter(),
+            EvaluateText=EvaluateTextInterpreter(),
+            DescribeVideo=VideoDescriptionInterpreter(),       
         )

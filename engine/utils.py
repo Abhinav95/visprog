@@ -47,8 +47,9 @@ class ProgramInterpreter:
 
 
 class ProgramGenerator():
-    def __init__(self,prompter,temperature=0.7,top_p=0.5,prob_agg='mean'):
+    def __init__(self,prompter,temperature=0.7,top_p=0.5,prob_agg='mean', model='text-davinci-003'):
         openai.api_key = os.getenv("OPENAI_API_KEY")
+        self.model = model
         self.prompter = prompter
         self.temperature = temperature
         self.top_p = top_p
@@ -71,19 +72,37 @@ class ProgramGenerator():
             response.choices[0]['logprobs']['token_logprobs'][:i]))
 
     def generate(self,inputs):
-        response = openai.Completion.create(
-            model="text-davinci-003",
-            prompt=self.prompter(inputs),
-            temperature=self.temperature,
-            max_tokens=512,
-            top_p=self.top_p,
-            frequency_penalty=0,
-            presence_penalty=0,
-            n=1,
-            logprobs=1
-        )
 
-        prob = self.compute_prob(response)
-        prog = response.choices[0]['text'].lstrip('\n').rstrip('\n')
-        return prog, prob
+        if self.model=='gpt-3.5-turbo':
+            response=openai.ChatCompletion.create(
+                model=self.model,
+                messages=[{"role":"user", "content":self.prompter(inputs)}],
+                temperature=self.temperature,
+                max_tokens=512,
+                top_p=self.top_p,
+                frequency_penalty=0,
+                presence_penalty=0,
+                n=1,
+            )
+            prob = 1
+            prog = response.choices[0].message.content.lstrip('\n').rstrip('\n')
+            return prog, prob
+            return 
+
+        else:
+            response = openai.Completion.create(
+                model=self.model,
+                prompt=self.prompter(inputs),
+                temperature=self.temperature,
+                max_tokens=512,
+                top_p=self.top_p,
+                frequency_penalty=0,
+                presence_penalty=0,
+                n=1,
+                logprobs=1
+            )
+
+            prob = self.compute_prob(response)
+            prog = response.choices[0]['text'].lstrip('\n').rstrip('\n')
+            return prog, prob
     
