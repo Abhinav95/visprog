@@ -19,14 +19,14 @@ from diffusers import StableDiffusionInpaintPipeline
 if os.path.isdir('../siq2'):
 
     data_dir = "../siq2"
-    # Import Video LLaMA
-    print("Trying to import Video_LLAMA")
-
-    # print("Trying to import pyannote")
-    # from pyannote.audio import Pipeline as DiarizationPipeline
+    print("Trying to import custom dependencies for SIQ2")
+    import decord
+    from decord import VideoReader
+    from transformers import Blip2Processor, Blip2Model, BlipForConditionalGeneration
+    import av
+    from transformers import AutoImageProcessor, AutoTokenizer, VisionEncoderDecoderModel
 
     import wget
-    print("Trying to import NeMo")
     from omegaconf import OmegaConf
     MODEL_CONFIG = os.path.join(data_dir,'diar_infer_telephonic.yaml')
     if not os.path.exists(MODEL_CONFIG):
@@ -1392,12 +1392,6 @@ class SubtitleInterpreter():
 
     def __init__(self):
         print(f'Registering {self.step_name} step')
-        # self.diarization_pipeline = DiarizationPipeline.from_pretrained(
-        #     "pyannote/speaker-diarization",
-        #     use_auth_token=os.getenv("HF_KEY")
-        # )
-        # self.diarization_pipeline.to(torch.device("cuda:0"))
-        
 
     def parse(self,prog_step):
         parse_result = parse_step(prog_step.prog_str)
@@ -1415,10 +1409,16 @@ class SubtitleInterpreter():
         video_id = prog_step.state[video_id_var]
         transcript_dir = prog_step.state['DATASET_INFO']['transcripts_path']
         
+        merge_subtitles=False
         transcript_text = ""
-        with open(os.path.join(transcript_dir, video_id+'.vtt'), 'r') as f:
-            for line in f:
-                transcript_text += line
+        subtitle=""
+        subtitles = []
+        if merge_subtitles:
+            raise NotImplementedError
+        else:
+            with open(os.path.join(transcript_dir, video_id+'.vtt'), 'r') as f:
+                for line in f:
+                    transcript_text += line
 
         audio_dir = prog_step.state['DATASET_INFO']['audios_path']
         audio_filename = os.path.join(audio_dir, video_id+'.wav')
@@ -1459,6 +1459,36 @@ class SubtitleInterpreter():
         prog_step.state[output_var] = transcript_text
         return transcript_text
 
+class ConcatenateTextInterpreter():
+
+    step_name="ConcatenateText"
+    def __init__(self):
+        print(f'Registering {self.step_name} step')
+
+    def parse(self,prog_step):
+        parse_result = parse_step(prog_step.prog_str)
+        step_name = parse_result['step_name']
+        input_text_vars = []
+        for item in parse_result['args']:
+            input_text_vars.append(parse_result['args'][item])
+        output_var = parse_result['output_var']
+        assert(step_name==self.step_name)
+        return input_text_vars, output_var
+
+    def html(self):
+        raise NotImplementedError
+
+    def execute(self,prog_step,inspect=False):
+        
+        input_text_vars, output_var = self.parse(prog_step)
+        concatenated_text = ""
+
+        for var in input_text_vars:
+            concatenated_text += prog_step.state[var]+'\n'
+
+        prog_step.state[output_var] = concatenated_text      
+        return concatenated_text
+
 class CreateTextInterpreter():
 
     step_name="CreateText"
@@ -1471,34 +1501,36 @@ class CreateTextInterpreter():
         question_var = parse_result['args']['question']
         subtitles_var = parse_result['args']['subtitles']
         video_description_var = parse_result['args']['video_description']
-        timestamp_var = parse_result['args']['timestamp']
+        additional_context_var = parse_result['args']['additional_context']
         output_var = parse_result['output_var']
         assert(step_name==self.step_name)
-        return question_var, subtitles_var, video_description_var, timestamp_var, output_var
+        return question_var, subtitles_var, video_description_var, additional_context_var, output_var
 
     def html(self):
         raise NotImplementedError
 
     def execute(self,prog_step,inspect=False):
         
-        question_var, subtitles_var, video_description_var, timestamp_var, output_var = self.parse(prog_step)
+        question_var, subtitles_var, video_description_var, additional_context_var, output_var = self.parse(prog_step)
 
         final_text = ""
 
         question = prog_step.state[question_var]
         subtitles = prog_step.state[subtitles_var]
         video_description = prog_step.state[video_description_var]
-        timestamp = prog_step.state[timestamp_var]
+        additional_context = prog_step.state[additional_context_var]
 
         # TODO: Some fancy prompt engineering here
         final_text += question
-        final_text += "\nSubtitles:\n"
-        final_text += subtitles
-        final_text += "\nVisual description of the video:\n"
-        final_text += video_description
-
-        if timestamp != None:
-            final_text += timestamp
+        if prog_step.state['METHOD']['use_subtitles'] == True:
+            final_text += "\nSubtitles:\n"
+            final_text += subtitles
+        if prog_step.state['METHOD']['use_video_description'] == True:
+            final_text += "\nVisual description of the video:\n"
+            final_text += video_description
+        if additional_context != None and additional_context != 'None':
+            final_text += "\nAdditional Context:\n"
+            final_text += additional_context
         
         print(final_text)
 
@@ -1549,14 +1581,21 @@ class EvaluateTextInterpreter():
         prog_step.state[output_var] = answer
         return answer
 
-    
-class VideoDescriptionInterpreter():
+class VideoSearchInterpreter():
 
-    step_name = "DescribeVideo"    
+    step_name = "SearchVideo"
+
     def __init__(self):
-        #TODO Import Video LLAMA here
         print(f'Registering {self.step_name} step')
-        self.model = None
+        self.gptmodel="gpt-3.5-turbo"
+        self.temperature = 0.7
+        self.top_p = 0.5
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.model_name = "blip"
+        self.processor = AutoProcessor.from_pretrained("Salesforce/blip-vqa-capfilt-large")
+        self.model = BlipForQuestionAnswering.from_pretrained(
+            "Salesforce/blip-vqa-capfilt-large").to(self.device)
+        self.model.eval()
 
     def parse(self,prog_step):
         parse_result = parse_step(prog_step.prog_str)
@@ -1568,20 +1607,252 @@ class VideoDescriptionInterpreter():
         assert(step_name==self.step_name)
         return video_id_var, timestamp_var, query_text, output_var
 
+    def predict(self,img,question):
+        if self.model_name == "blip":
+            encoding = self.processor(img,question,return_tensors='pt')
+            encoding = {k:v.to(self.device) for k,v in encoding.items()}
+            with torch.no_grad():
+                outputs = self.model.generate(**encoding)
+            
+            return self.processor.decode(outputs[0], skip_special_tokens=True)
+        elif self.model_name == "blip2":
+            inputs = self.processor(images=img, text=question, return_tensors="pt").to(self.device, torch.float16)
+            with torch.no_grad():                
+                outputs = self.model(**inputs)
+            return self.processor.decode(outputs[0], skip_special_tokens=True)            
+        else:
+            raise NotImplementedError
+
     def html(self):
         raise NotImplementedError
+
+    def load_video(self, video_path, n_frms=30, height=-1, width=-1, sampling="uniform", return_msg = False):
+        decord.bridge.set_bridge("torch")
+        vr = VideoReader(uri=video_path, height=height, width=width)
+
+        vlen = len(vr)
+        start, end = 0, vlen
+
+        n_frms = min(n_frms, vlen)
+
+        if sampling == "uniform":
+            indices = np.arange(start, end, vlen / n_frms).astype(int).tolist()
+        elif sampling == "headtail":
+            indices_h = sorted(rnd.sample(range(vlen // 2), n_frms // 2))
+            indices_t = sorted(rnd.sample(range(vlen // 2, vlen), n_frms // 2))
+            indices = indices_h + indices_t
+        else:
+            raise NotImplementedError
+
+        # get_batch -> T, H, W, C
+        temp_frms = vr.get_batch(indices)
+        # print(type(temp_frms))
+        tensor_frms = torch.from_numpy(temp_frms) if type(temp_frms) is not torch.Tensor else temp_frms
+        frms = tensor_frms.permute(3, 0, 1, 2).float()  # (C, T, H, W)
+
+        if not return_msg:
+            return frms
+
+        fps = float(vr.get_avg_fps())
+        sec = ", ".join([str(round(f / fps, 1)) for f in indices])
+        # " " should be added in the start and end
+        msg = f"The video contains {len(indices)} frames sampled at {sec} seconds. "
+        return frms, msg
 
     def execute(self,prog_step,inspect=False):
         video_id_var, timestamp_var, query_text, output_var = self.parse(prog_step)
         video_id = prog_step.state[video_id_var]   
         video_dir = prog_step.state['DATASET_INFO']['videos_path']
         
-        video_description_text = "\nThis is a placeholder text for the video description generated by the VQA model\n"
+        video_description_text = "The following timed output is for the question: "+query_text+'\n'
         # Process the video and optionally the audio here
-                
+        frames_to_sample = 30
+        video_data = self.load_video(os.path.join(video_dir, video_id+'.mp4'), n_frms=frames_to_sample, height=224, width=224)
+        
+        for frame_idx in range(video_data.shape[1]):
+            video_description_text += '00:00:'+f"%06.3f"%float((frame_idx/frames_to_sample)*60) + " --> " + '00:00:'+f"%06.3f" % (((frame_idx+1)/frames_to_sample)*60) + "\n"
+            frame = video_data[:, frame_idx, : ,:]
+
+            answer = self.predict(frame,query_text)
+            video_description_text += answer + '\n\n'
+        
+        video_description_text += "\nSummarize this information\n"
+        response=openai.ChatCompletion.create(
+            model=self.gptmodel,
+            messages=[{"role":"user", "content":video_description_text}],
+            temperature=self.temperature,
+            max_tokens=512,
+            top_p=self.top_p,
+            frequency_penalty=0,
+            presence_penalty=0,
+            n=1,
+        ) #TODO: Play around with the parameters
+        answer = "Video Search output for question '"+query_text+"':\n"
+        answer += response.choices[0].message.content.lstrip('\n').rstrip('\n')
+        prog_step.state[output_var] = answer
+        return answer
+    
+    
+class VideoDescriptionInterpreter():
+
+    step_name = "DescribeVideo"    
+    def __init__(self):
+        print(f'Registering {self.step_name} step')
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # self.model_name = "blip"
+        # # self.processor = AutoProcessor.from_pretrained("Salesforce/blip-vqa-capfilt-large")
+        # # self.model = BlipForQuestionAnswering.from_pretrained(
+        # #     "Salesforce/blip-vqa-capfilt-large").to(self.device)
+        # self.processor = AutoProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
+        # self.model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large").to(self.device)
+        # self.model.eval()
+
+        self.model_name = "timesformer"
+        self.image_processor = AutoImageProcessor.from_pretrained("MCG-NJU/videomae-base")
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        self.model = VisionEncoderDecoderModel.from_pretrained("Neleac/timesformer-gpt2-video-captioning").to(self.device)
+        self.model.eval()
+
+        # self.model_name = "blip2"
+        # self.processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+        # self.model = Blip2Model.from_pretrained("Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16).to(self.device)
+        # self.model.eval()
+
+    def parse(self,prog_step):
+        parse_result = parse_step(prog_step.prog_str)
+        step_name = parse_result['step_name']
+        video_id_var = parse_result['args']['video']
+        timestamp_var = parse_result['args']['timestamp']
+        query_text = parse_result['args']['query']
+        output_var = parse_result['output_var']
+        assert(step_name==self.step_name)
+        return video_id_var, timestamp_var, query_text, output_var
+
+    def predict(self,img,question):
+        if self.model_name == "blip":
+            encoding = self.processor(img,question,return_tensors='pt')
+            encoding = {k:v.to(self.device) for k,v in encoding.items()}
+            with torch.no_grad():
+                outputs = self.model.generate(**encoding)
+            
+            return self.processor.decode(outputs[0], skip_special_tokens=True)
+        elif self.model_name == "blip2":
+            inputs = self.processor(images=img, text=question, return_tensors="pt").to(self.device, torch.float16)
+            with torch.no_grad():                
+                outputs = self.model(**inputs)
+            return self.processor.decode(outputs[0], skip_special_tokens=True)            
+        else:
+            raise NotImplementedError
+
+    def html(self):
+        raise NotImplementedError
+
+    def load_video(self, video_path, n_frms=30, height=-1, width=-1, sampling="uniform", return_msg = False):
+        decord.bridge.set_bridge("torch")
+        vr = VideoReader(uri=video_path, height=height, width=width)
+
+        vlen = len(vr)
+        start, end = 0, vlen
+
+        n_frms = min(n_frms, vlen)
+
+        if sampling == "uniform":
+            indices = np.arange(start, end, vlen / n_frms).astype(int).tolist()
+        elif sampling == "headtail":
+            indices_h = sorted(rnd.sample(range(vlen // 2), n_frms // 2))
+            indices_t = sorted(rnd.sample(range(vlen // 2, vlen), n_frms // 2))
+            indices = indices_h + indices_t
+        else:
+            raise NotImplementedError
+
+        # get_batch -> T, H, W, C
+        temp_frms = vr.get_batch(indices)
+        # print(type(temp_frms))
+        tensor_frms = torch.from_numpy(temp_frms) if type(temp_frms) is not torch.Tensor else temp_frms
+        frms = tensor_frms.permute(3, 0, 1, 2).float()  # (C, T, H, W)
+
+        if not return_msg:
+            return frms
+
+        fps = float(vr.get_avg_fps())
+        sec = ", ".join([str(round(f / fps, 1)) for f in indices])
+        # " " should be added in the start and end
+        msg = f"The video contains {len(indices)} frames sampled at {sec} seconds. "
+        return frms, msg
+
+    def execute(self,prog_step,inspect=False):
+        video_id_var, timestamp_var, query_text, output_var = self.parse(prog_step)
+        video_id = prog_step.state[video_id_var]   
+        video_dir = prog_step.state['DATASET_INFO']['videos_path']
+        
+        video_description_text = ""
+
+        if self.model_name == "timesformer":
+            # load video
+            video_path = os.path.join(video_dir, video_id+'.mp4')
+            container = av.open(video_path)
+
+            # extract evenly spaced frames from video
+            segments_to_sample = 10
+            segments = []
+            seg_len = container.streams.video[0].frames // segments_to_sample
+            clip_len = self.model.config.encoder.num_frames
+            
+            frameindices = []
+            total_indices = []
+            segment_map = {}
+            segments = []
+            for segment_idx in range(segments_to_sample):
+                segments.append([])
+                indices = set(np.linspace(segment_idx*seg_len, (segment_idx+1)*seg_len, num=clip_len, endpoint=False).astype(np.int64))                
+                frameindices.append(indices)
+                for element in indices:
+                    total_indices.append(element)
+                    segment_map[element] = segment_idx
+
+            container.seek(0)
+            for i, frame in enumerate(container.decode(video=0)):
+                if i in total_indices:
+                    segments[segment_map[i]].append(frame.to_ndarray(format="rgb24"))
+
+            # generate caption
+            gen_kwargs = {
+                "min_length": 10, 
+                "max_length": 20, 
+                "num_beams": 8,
+            }
+            for segment_idx in range(len(segments)):
+                frames = segments[segment_idx]
+                with torch.no_grad():                
+                    pixel_values = self.image_processor(frames, return_tensors="pt").pixel_values.to(self.device)
+                    tokens = self.model.generate(pixel_values, **gen_kwargs)
+                    caption = self.tokenizer.batch_decode(tokens, skip_special_tokens=True)[0]
+                    video_description_text += '00:00:'+f"%06.3f"%float((segment_idx/segments_to_sample)*60) + " --> " + '00:00:'+f"%06.3f" % (((segment_idx+1)/segments_to_sample)*60) + "\n"                    
+                    video_description_text += caption+'\n'
+
+        else:
+            # Process the video and optionally the audio here
+            frames_to_sample = 30
+            video_data = self.load_video(os.path.join(video_dir, video_id+'.mp4'), n_frms=frames_to_sample, height=224, width=224)
+            
+            for frame_idx in range(video_data.shape[1]):
+                video_description_text += '00:00:'+f"%06.3f"%float((frame_idx/frames_to_sample)*60) + " --> " + '00:00:'+f"%06.3f" % (((frame_idx+1)/frames_to_sample)*60) + "\n"
+                frame = video_data[:, frame_idx, : ,:]
+
+                answer = self.predict(frame,"A picture of")
+                if answer[:12].lower() == "a picture of":
+                    answer = answer[12:]
+                video_description_text += answer + '\n\n'
+
+        audio_description_text = ""
+        if prog_step.state['METHOD']['use_audio_description'] == True:
+            #TODO Integrate an Audio QA model here
+            audio_description_text += ""            
+            
+        video_description_text += audio_description_text
+        
         prog_step.state[output_var] = video_description_text
         return video_description_text
-
 
 
 def register_step_interpreters(dataset='nlvr'):
@@ -1634,5 +1905,7 @@ def register_step_interpreters(dataset='nlvr'):
             GetSubtitles=SubtitleInterpreter(),
             CreateText=CreateTextInterpreter(),
             EvaluateText=EvaluateTextInterpreter(),
-            DescribeVideo=VideoDescriptionInterpreter(),       
+            DescribeVideo=VideoDescriptionInterpreter(),
+            SearchVideo=VideoSearchInterpreter(),
+            ConcatenateText=ConcatenateTextInterpreter()
         )
