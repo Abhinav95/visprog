@@ -104,6 +104,8 @@ for i,row in val_df.iterrows():
             if row['answer_idx'] in [int(c) for c in result if c.isdigit()]:
                 running_corrects_val += 1
             running_total_val += 1
+            print("Question:", question)
+            print("Correct answer:", row['answer_idx'], "Given answer:", [int(c) for c in result if c.isdigit()])
             print("[Iteration:",str(i)+'/'+str(len(val_df)-1)+',',"Running validation accuracy:", f"%06.3f" % (100.0 * running_corrects_val/running_total_val)+']')
 
     except Exception as e:
@@ -114,6 +116,9 @@ print("Validation finished. Exporting json to:", output_json_path)
 val_df.to_json(output_json_path, orient='records', lines=True)
 validation_accuracy = compute_correctness(val_df)
 print("Accuracy:", validation_accuracy)
+with open("val_"+EXPERIMENT_NAME+".txt", 'w') as f:
+    f.write(str(validation_accuracy)+'\n')
+
 
 # print("Beginning test")
 # running_total_test = 0

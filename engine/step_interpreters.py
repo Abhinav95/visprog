@@ -25,7 +25,7 @@ if os.path.isdir('../siq2'):
     from transformers import Blip2Processor, Blip2Model, BlipForConditionalGeneration
     import av
     from transformers import AutoImageProcessor, AutoTokenizer, VisionEncoderDecoderModel
-
+    import webvtt
     import wget
     from omegaconf import OmegaConf
     MODEL_CONFIG = os.path.join(data_dir,'diar_infer_telephonic.yaml')
@@ -1416,9 +1416,13 @@ class SubtitleInterpreter():
         if merge_subtitles:
             raise NotImplementedError
         else:
-            with open(os.path.join(transcript_dir, video_id+'.vtt'), 'r') as f:
-                for line in f:
-                    transcript_text += line
+            if prog_step.state['METHOD']['use_timed_subtitles'] == True:
+                with open(os.path.join(transcript_dir, video_id+'.vtt'), 'r') as f:
+                    for line in f:
+                        transcript_text += line
+            else:
+                captions = [caption.text for caption in webvtt.read(os.path.join(transcript_dir, video_id+'.vtt'))]
+                transcript_text += '\n'.join(captions)
 
         audio_dir = prog_step.state['DATASET_INFO']['audios_path']
         audio_filename = os.path.join(audio_dir, video_id+'.wav')
