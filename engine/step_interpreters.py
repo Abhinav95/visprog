@@ -1797,7 +1797,13 @@ class VideoDescriptionInterpreter():
         
         video_description_text = ""
 
-        if self.model_name == "timesformer" and prog_step.state['METHOD']['use_context']==True:
+        if prog_step.state['METHOD']['use_context']==True:
+            prog_step.state[output_var] = video_description_text
+            print("Ignoring video context info")
+            return video_description_text
+
+
+        if self.model_name == "timesformer":
             # load video
             video_path = os.path.join(video_dir, video_id+'.mp4')
             container = av.open(video_path)
