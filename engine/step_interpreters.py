@@ -1567,6 +1567,12 @@ class EvaluateTextInterpreter():
         text_var, query_text, output_var = self.parse(prog_step)
 
         final_text = ""
+
+        if prog_step.state['METHOD']['use_context']==False and text_var=="SUBTITLES":
+            print("Ignoring text context because use_context==False")
+            prog_step.state[output_var] = final_text
+            return final_text
+
         final_text += prog_step.state[text_var]
         final_text += query_text
         
@@ -1791,7 +1797,7 @@ class VideoDescriptionInterpreter():
         
         video_description_text = ""
 
-        if self.model_name == "timesformer":
+        if self.model_name == "timesformer" and prog_step.state['METHOD']['use_context']==True:
             # load video
             video_path = os.path.join(video_dir, video_id+'.mp4')
             container = av.open(video_path)

@@ -19,6 +19,7 @@ experiment_setting = dict(
     use_video_description=False,
     use_audio_description=True,
     use_timed_subtitles=True,
+    use_context=True
     num_programgen_examples=12
 )
 EXPERIMENT_NAME = (
@@ -28,6 +29,7 @@ EXPERIMENT_NAME = (
     "_vid_"+str(experiment_setting['use_video_description'])+
     "_aud_"+str(experiment_setting['use_audio_description'])+
     "_timedsub_"+str(experiment_setting['use_timed_subtitles'])+
+    "_context_"+str(experiment_setting['use_context'])+
     "_progexamples_"+str(experiment_setting['num_programgen_examples'])
 )
 
@@ -86,7 +88,8 @@ for i,row in val_df.iterrows():
                     use_diarization=experiment_setting['use_diarization'],
                     use_video_description=experiment_setting['use_video_description'],
                     use_audio_description=experiment_setting['use_audio_description'],
-                    use_timed_subtitles=experiment_setting['use_timed_subtitles']
+                    use_timed_subtitles=experiment_setting['use_timed_subtitles'],
+                    use_context=experiment_setting['use_context']                    
                 ),
                 DATASET_INFO=dict(
                     dataset_dir=dataset_dir,
