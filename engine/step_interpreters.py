@@ -1797,7 +1797,7 @@ class VideoDescriptionInterpreter():
         
         video_description_text = ""
 
-        if prog_step.state['METHOD']['use_context']==True:
+        if prog_step.state['METHOD']['use_context']==False:
             prog_step.state[output_var] = video_description_text
             print("Ignoring video context info")
             return video_description_text
