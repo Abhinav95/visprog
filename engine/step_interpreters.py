@@ -1673,6 +1673,11 @@ class VideoSearchInterpreter():
         video_id_var, timestamp_var, query_text, output_var = self.parse(prog_step)
         video_id = prog_step.state[video_id_var]   
         video_dir = prog_step.state['DATASET_INFO']['videos_path']
+
+        if prog_step.state['METHOD']['use_context']==False:
+            prog_step.state[output_var] = ""
+            print("Ignoring video context info")
+            return ""
         
         video_description_text = "The following timed output is for the question: "+query_text+'\n'
         # Process the video and optionally the audio here
@@ -1796,12 +1801,6 @@ class VideoDescriptionInterpreter():
         video_dir = prog_step.state['DATASET_INFO']['videos_path']
         
         video_description_text = ""
-
-        if prog_step.state['METHOD']['use_context']==False:
-            prog_step.state[output_var] = video_description_text
-            print("Ignoring video context info")
-            return video_description_text
-
 
         if self.model_name == "timesformer":
             # load video
